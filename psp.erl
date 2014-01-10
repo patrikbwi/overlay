@@ -18,88 +18,89 @@
 -module(psp).
 
 -export([ init/0
-        , new/0
-        , is_loop/1
-        , add_me/1
+        , new/1
+        , is_loop/2
+        , add_me/2
         ]).
 
 -opaque psp() :: <<_:2560>>.
--export_type([psp/0]).
+-opaque psp_db() :: ets:tid().
+-export_type([psp/0, psp_db/0]).
 
 %%%_* API ======================================================================
 %% @doc Initializes a random 128 bit crypto key, a random string and a counter.
--spec init() -> ok.
+-spec init() -> psp_db().
 init() ->
-  init_ets(),
-  reset_crypto(),
-  ok.
+  PspDB = init_ets(),
+  reset_crypto(PspDB),
+  PspDB.
 
 %% @doc Generate a new PSP where add_me/1 gives the only non-random entry.
--spec new() -> psp().
-new() ->
+-spec new(psp_db()) -> psp().
+new(PspDB) ->
   PSP = crypto:rand_bytes(16*20),
-  add_me(PSP).
+  add_me(PspDB, PSP).
 
 %% @doc Checks if there is an entry in the PSP that is us, i.e. we are looping.
--spec is_loop(psp()) -> boolean().
-is_loop(PSP) ->
-  [loop || <<Encrypted:128>> <= PSP, is_me(<<Encrypted:128>>)] =/= [].
+-spec is_loop(psp_db(), psp()) -> boolean().
+is_loop(PspDB, PSP) ->
+  [loop || <<Encrypted:128>> <= PSP, is_me(PspDB, <<Encrypted:128>>)] =/= [].
 
 %% @doc Add an entry to the PSP for this node.
--spec add_me(psp()) -> psp().
-add_me(PSP) ->
+-spec add_me(psp_db(), psp()) -> psp().
+add_me(PspDB, PSP) ->
   <<PS:2432, _:128>> = PSP,
-  Cnt = inc_cnt(),
-  Str = get_key(str),
-  Me = encrypt(<<Str/binary, Cnt:48>>),
+  Cnt = inc_cnt(PspDB),
+  Str = get_key(PspDB, str),
+  Me = encrypt(PspDB, <<Str/binary, Cnt:48>>),
   <<Me/binary, PS:2432>>.
 
 %%%_* Internal =================================================================
 table() ->
   psp.
 
-is_me(Encrypted) ->
-  CurrentCnt = get_key(cnt),
-  <<Str:80>> = get_key(str),
-  case catch decrypt(Encrypted) of
+is_me(PspDB, Encrypted) ->
+  CurrentCnt = get_key(PspDB, cnt),
+  <<Str:80>> = get_key(PspDB, str),
+  case catch decrypt(PspDB, Encrypted) of
     <<Str:80, Cnt:48>> when Cnt < CurrentCnt ->
       true;
     _ ->
       false
   end.
 
-encrypt(B) ->
-  crypto:block_encrypt(aes_cbc128, get_key(key), get_key(iv), B).
+encrypt(PspDB, B) ->
+  crypto:block_encrypt(aes_cbc128, get_key(PspDB, key), get_key(PspDB, iv), B).
 
-decrypt(B) ->
-  crypto:block_decrypt(aes_cbc128, get_key(key), get_key(iv), B).
+decrypt(PspDB, B) ->
+  crypto:block_decrypt(aes_cbc128, get_key(PspDB, key), get_key(PspDB, iv), B).
 
 init_ets() ->
-  ets:new(table() , [ set, public, named_table
+  ets:new(table() , [ set, public
 		    , {read_concurrency, true}
                     , {write_concurrency, true}
                     ]).
 
-reset_crypto() ->
+reset_crypto(PspDB) ->
   IV = crypto:rand_bytes(16),  
   Key = crypto:rand_bytes(16),
   Str = crypto:rand_bytes(10),
   Cnt = crypto:rand_bytes(6),
   <<IntCnt:48>> = Cnt,
-  ets:insert(table(), [ {iv, IV}, {key, Key}
-                      , {str, Str}, {cnt, IntCnt}]).
+  ets:insert(PspDB, [ {iv, IV}, {key, Key}
+                    , {str, Str}, {cnt, IntCnt}]).
 
-inc_cnt() ->
-  case ets:update_counter(table(), cnt, {2, 1, 281474976710655, 0}) of
+inc_cnt(PspDB) ->
+  case ets:update_counter(PspDB, cnt, {2, 1, 281474976710655, 0}) of
     0 = N ->
-      reset_crypto(),
+      reset_crypto(PspDB),
       N;
     N ->
       N
   end.
 
-get_key(Key) ->
-  [{_, Val}] = ets:lookup(table(), Key),
+get_key(PspDB, Key) ->
+  [{_, Val}] = ets:lookup(PspDB, Key),
   Val.
 
 %%%_* Emacs ====================================================================
